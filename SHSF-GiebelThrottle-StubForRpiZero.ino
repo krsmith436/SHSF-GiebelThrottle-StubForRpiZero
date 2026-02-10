@@ -67,8 +67,19 @@ int        port     = 1883;
 const char topic_cmd[]  = "shsf/giebel_throttle/commands";
 const char topic_res[]  = "shsf/giebel_throttle/responses";
 const char topic_sts[]  = "shsf/giebel_throttle/status";
+const char topic_hrt[]  = "shsf/heartbeat";
+//
+// Watchdog
+unsigned long lastHeartbeatMillis = 0;
+const unsigned long watchdogTimeout = 25000; // 25 seconds (allows for 2 missed heartbeats)
+bool systemOnline = false;
 //
 // Frame for LED matrix
+const uint32_t frown[] = {
+  0x19819,
+  0x80000001,
+  0xf8108000
+};
 const uint32_t danger[] = {
 	0x400a015,
 	0x1502082,
@@ -121,10 +132,12 @@ void setup() {
     }
     delay(10);
   }
+  //
   // Set the message receive callback
   mqttClient.onMessage(onMqttMessage);
-
-  matrix.begin(); // Initialize the LED matrix
+  //
+  // Initialize the LED matrix
+  matrix.begin();
   matrix.loadFrame(danger);
   //
   Serial.println(F("SH&SF - Giebel Throttle Stub #3 for Raspberry Pi"));
@@ -201,6 +214,10 @@ void loop() {
           Serial.print("[MQTT] Subscribing to topic: ");
           Serial.println(topic_res);
           mqttClient.subscribe(topic_res);
+          //
+          // Subscribe to heartbeat topic
+          mqttClient.subscribe(topic_hrt);
+          //
           currentState = RUNNING;
         } else {
           Serial.print("[MQTT] Failed, error code: ");
@@ -219,6 +236,16 @@ void loop() {
           currentState = CONNECT_MQTT;
         } else {
           mqttClient.poll(); // Process incoming messages
+          //
+          // Check if the Pi has "gone dark"
+          if (millis() - lastHeartbeatMillis > watchdogTimeout) {
+            if (systemOnline) {
+              Serial.println("[WATCHDOG ALERT] SHSF Hub Offline !!!");
+              matrix.loadFrame(frown);
+              systemOnline = false;
+              // ACTION: Turn off critical components here if needed
+            }
+          }
         }
         break;
     }
@@ -315,14 +342,28 @@ void sendMqttCommand(String cmd) {
   mqttClient.endMessage();
 }
 //
-void onMqttMessage(int messageSize) {
-  // We received a message
+void onMqttMessage(int messageSize) { // We received a message
+  // 1. Grab the topic immediately!
+  String topic = mqttClient.messageTopic();
+  //
+  // 2. Now handle the payload
   String content = "";
   while (mqttClient.available()) {
     content += (char)mqttClient.read();
   }
-  Serial.print("[MQTT] Message received on topic '");
-  Serial.print(topic_res);
-  Serial.print("': ");
-  Serial.println(content);
+  //
+  if (topic == topic_hrt) {
+    lastHeartbeatMillis = millis();
+    if (!systemOnline) {
+      Serial.println("[WATCHDOG ALERT] SHSF Hub Online");
+      matrix.loadFrame(happy);
+      systemOnline = true;
+    }
+  } 
+  else {
+    Serial.print("[MQTT] Message received on topic '");
+    Serial.print(topic);
+    Serial.print("': ");
+    Serial.println(content);
+  }
 }
