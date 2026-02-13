@@ -189,6 +189,7 @@ void loop() {
     blnCheckConnection = false;
     switch (currentState) {
       case CONNECT_WIFI:
+        matrix.loadFrame(danger);
         Serial.print("[WiFi] Initiating connection to: ");
         Serial.println(storage.ssid);
         WiFi.begin(storage.ssid, storage.pass);
@@ -198,17 +199,16 @@ void loop() {
       case AWAIT_WIFI:
         if (WiFi.status() == WL_CONNECTED) {
           Serial.println("[WiFi] Connected!");
-          matrix.loadFrame(chip);
           printWifiStatus();
           currentState = CONNECT_MQTT;
         }
         //
       case CONNECT_MQTT:
+        matrix.loadFrame(chip);
         Serial.print("[MQTT] Attempting connection to broker: ");
         Serial.println(broker);
         if (mqttClient.connect(broker, port)) {
           Serial.println("[MQTT] Connected to broker.");
-          matrix.loadFrame(happy);
           //
           // Subscribe to responses coming back from the Nano
           Serial.print("[MQTT] Subscribing to topic: ");
@@ -216,6 +216,8 @@ void loop() {
           mqttClient.subscribe(topic_res);
           //
           // Subscribe to heartbeat topic
+          Serial.print("[MQTT] Subscribing to topic: ");
+          Serial.println(topic_hrt);
           mqttClient.subscribe(topic_hrt);
           //
           currentState = RUNNING;
@@ -228,6 +230,12 @@ void loop() {
         //
       case RUNNING:
         // This is the active state
+        if (systemOnline) {
+          matrix.loadFrame(happy);
+        } 
+        else {
+          matrix.loadFrame(frown);
+        }
         if (WiFi.status() != WL_CONNECTED) {
           Serial.println("[WiFi] Connection lost!");
           currentState = CONNECT_WIFI;
@@ -241,7 +249,6 @@ void loop() {
           if (millis() - lastHeartbeatMillis > watchdogTimeout) {
             if (systemOnline) {
               Serial.println("[WATCHDOG ALERT] SHSF Hub Offline !!!");
-              matrix.loadFrame(frown);
               systemOnline = false;
               // ACTION: Turn off critical components here if needed
             }
