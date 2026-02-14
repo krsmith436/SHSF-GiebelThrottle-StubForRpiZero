@@ -18,7 +18,7 @@
 #include <WiFiS3.h>
 #include <ArduinoMqttClient.h>
 #include <Tweakly.h> // for non-blocking (no use of delay()) schedule of tasks and input processing.
-#include <EEPROM.h>
+#include <EEPROM.h> // for WiFi credentials.
 //
 //--------------------- I2C Addresses ----------------------//
 #define OLED_I2C_ADDR 0x3C // Address 0x3C for 128x32
@@ -37,6 +37,7 @@ MqttClient mqttClient(wifiClient);
 //
 //------------------------Tweakly---------------------------//
 TickTimer timerCheckConnection;
+TickTimer timerWatchdogTimeout;
 //
 //---------------------State Machine -----------------------//
 bool blnCheckConnection = true;
@@ -70,8 +71,6 @@ const char topic_sts[]  = "shsf/giebel_throttle/status";
 const char topic_hrt[]  = "shsf/heartbeat";
 //
 // Watchdog
-unsigned long lastHeartbeatMillis = 0;
-const unsigned long watchdogTimeout = 25000; // 25 seconds (allows for 2 missed heartbeats)
 bool systemOnline = false;
 //
 // Frame for LED matrix
@@ -111,14 +110,6 @@ const uint8_t BUTTON_5 = 5;
 //                      Setup code
 //----------------------------------------------------------//
 void setup() {
-  int eeAddress = 0; //EEPROM address to start reading from
-  EEPROM.get(eeAddress, storage);
-  if (storage.checkValue == CONFIG_ID) {
-    Serial.println("Credentials found in EEPROM.");
-  } else {
-    Serial.println("No credentials found in EEPROM!");
-  }
-  //
   unsigned long timeout = 5000; // Serial() timeout in milliseconds.
   unsigned long startMillis = millis(); // Record the start time for Serial() timeout.
   //
@@ -132,6 +123,17 @@ void setup() {
     }
     delay(10);
   }
+  Serial.println(F("SH&SF - Giebel Throttle Stub #3 for Raspberry Pi"));
+  Serial.println(F("Starting setup."));
+  //
+  // EEPROM read for WiFi credentials.
+  int eeAddress = 0; //EEPROM address to start reading from
+  EEPROM.get(eeAddress, storage);
+  if (storage.checkValue == CONFIG_ID) {
+    Serial.println("Credentials found in EEPROM.");
+  } else {
+    Serial.println("No credentials found in EEPROM!");
+  }
   //
   // Set the message receive callback
   mqttClient.onMessage(onMqttMessage);
@@ -140,8 +142,6 @@ void setup() {
   matrix.begin();
   matrix.loadFrame(danger);
   //
-  Serial.println(F("SH&SF - Giebel Throttle Stub #3 for Raspberry Pi"));
-  Serial.println(F("Starting setup."));
   if (displayConnected) {
     // initialize OLED display
     // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
@@ -172,6 +172,9 @@ void setup() {
   //
   // Initialize Tweakly.
   timerCheckConnection.attach(5000, []{ blnCheckConnection = true; });
+  //   Check if the Pi has "gone dark" for 25 seconds (allows for 2 missed heartbeats).
+  //   Using kick() method to reset timer when heartbeat received.
+  timerWatchdogTimeout.attach(25000, watchdogAlert);
   //
   Serial.print(F("Setup is complete.\n"));
 }
@@ -190,7 +193,7 @@ void loop() {
     switch (currentState) {
       case CONNECT_WIFI:
         matrix.loadFrame(danger);
-        Serial.print("[WiFi] Initiating connection to: ");
+        Serial.print("[WIFI] Initiating connection to: ");
         Serial.println(storage.ssid);
         WiFi.begin(storage.ssid, storage.pass);
         currentState = AWAIT_WIFI;
@@ -198,10 +201,11 @@ void loop() {
         //
       case AWAIT_WIFI:
         if (WiFi.status() == WL_CONNECTED) {
-          Serial.println("[WiFi] Connected!");
+          Serial.println("[WIFI] Connected to WiFi.");
           printWifiStatus();
           currentState = CONNECT_MQTT;
         }
+        break;
         //
       case CONNECT_MQTT:
         matrix.loadFrame(chip);
@@ -215,7 +219,7 @@ void loop() {
           Serial.println(topic_res);
           mqttClient.subscribe(topic_res);
           //
-          // Subscribe to heartbeat topic
+          // Subscribe to heartbeat topic from Pi Zero
           Serial.print("[MQTT] Subscribing to topic: ");
           Serial.println(topic_hrt);
           mqttClient.subscribe(topic_hrt);
@@ -224,7 +228,7 @@ void loop() {
         } else {
           Serial.print("[MQTT] Failed, error code: ");
           Serial.println(mqttClient.connectError());
-          currentState = CONNECT_WIFI; // Drop back to check WiFi first
+          // currentState = CONNECT_WIFI; // Drop back to check WiFi first
         }
         break;
         //
@@ -237,22 +241,13 @@ void loop() {
           matrix.loadFrame(frown);
         }
         if (WiFi.status() != WL_CONNECTED) {
-          Serial.println("[WiFi] Connection lost!");
+          Serial.println("[WIFI] Connection lost!");
           currentState = CONNECT_WIFI;
         } else if (!mqttClient.connected()) {
           Serial.println("[MQTT] Connection lost!");
           currentState = CONNECT_MQTT;
         } else {
           mqttClient.poll(); // Process incoming messages
-          //
-          // Check if the Pi has "gone dark"
-          if (millis() - lastHeartbeatMillis > watchdogTimeout) {
-            if (systemOnline) {
-              Serial.println("[WATCHDOG ALERT] SHSF Hub Offline !!!");
-              systemOnline = false;
-              // ACTION: Turn off critical components here if needed
-            }
-          }
         }
         break;
     }
@@ -321,19 +316,21 @@ void loop() {
 //----------------------------------------------------------//
 //                  End of Loop code
 //----------------------------------------------------------//
+void watchdogAlert() {
+  Serial.println("[WATCHDOG ALERT] SHSF Hub Offline !!!");
+  systemOnline = false;
+  // ACTION: Turn off critical components here if needed
+}
+//
 void printWifiStatus() {
-  // print the SSID of the network you're attached to:
-  Serial.print("SSID: ");
-  Serial.println(WiFi.SSID());
-
   // print your board's IP address:
   IPAddress ip = WiFi.localIP();
-  Serial.print("IP Address: ");
+  Serial.print("[WIFI] Board IP Address: ");
   Serial.println(ip);
 
   // print the received signal strength:
   long rssi = WiFi.RSSI();
-  Serial.print("Signal Strength (RSSI):");
+  Serial.print("[WIFI] Signal Strength (RSSI):");
   Serial.print(rssi);
   Serial.println(" dBm");
 }
@@ -360,10 +357,10 @@ void onMqttMessage(int messageSize) { // We received a message
   }
   //
   if (topic == topic_hrt) {
-    lastHeartbeatMillis = millis();
+    timerWatchdogTimeout.kick(); // All is good, reset timer.
+    //
     if (!systemOnline) {
       Serial.println("[WATCHDOG ALERT] SHSF Hub Online");
-      matrix.loadFrame(happy);
       systemOnline = true;
     }
   } 
