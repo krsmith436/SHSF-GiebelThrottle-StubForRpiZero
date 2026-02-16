@@ -69,6 +69,7 @@ const char topic_cmd[]  = "shsf/giebel_throttle/commands";
 const char topic_res[]  = "shsf/giebel_throttle/responses";
 const char topic_sts[]  = "shsf/giebel_throttle/status";
 const char topic_hrt[]  = "shsf/heartbeat";
+const char topic_rssi[]  = "shsf/giebel_throttle/rssi";
 //
 // Watchdog
 bool systemOnline = false;
@@ -247,6 +248,16 @@ void loop() {
           Serial.println("[MQTT] Connection lost!");
           currentState = CONNECT_MQTT;
         } else {
+          // Send RSSI update
+          long rssi = WiFi.RSSI();
+          Serial.print("[MQTT] Sending command to topic '");
+          Serial.print(topic_rssi);
+          Serial.print("': ");
+          Serial.println(rssi);
+          mqttClient.beginMessage(topic_rssi);
+          mqttClient.print(rssi);
+          mqttClient.endMessage();
+          //
           mqttClient.poll(); // Process incoming messages
         }
         break;
@@ -330,7 +341,7 @@ void printWifiStatus() {
 
   // print the received signal strength:
   long rssi = WiFi.RSSI();
-  Serial.print("[WIFI] Signal Strength (RSSI):");
+  Serial.print("[WIFI] Signal Strength (RSSI): ");
   Serial.print(rssi);
   Serial.println(" dBm");
 }
